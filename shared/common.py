@@ -231,6 +231,64 @@ def get_collection_date(account):
     return json_blob['GeneratedTime'][:10]
 
 
+def get_user_credential_usage(account, arn):
+    def days_between(s1, s2):
+        """s1 and s2 are date strings, such as 2018-04-08T23:33:20+00:00 """
+        time_format = "%Y-%m-%dT%H:%M:%S"
+
+        d1 = datetime.strptime(s1.split("+")[0], time_format)
+        d2 = datetime.strptime(s2.split("+")[0], time_format)
+        return abs((d1-d2).days)
+
+    json_blob = query_aws(account, "iam-get-credential-report", get_us_east_1(account))
+    csv_lines = json_blob['Content'].split('\n')
+    collection_date = json_blob['GeneratedTime']
+
+    # Skip header
+    csv_lines.pop(0)
+
+    users_with_passwords = 0
+    users_with_password_but_no_mfa = 0
+
+    # Header:
+    # user,arn,user_creation_time,password_enabled,password_last_used,password_last_changed,
+    # password_next_rotation,mfa_active,access_key_1_active,access_key_1_last_rotated,
+    # access_key_1_last_used_date,access_key_1_last_used_region,access_key_1_last_used_service,
+    # access_key_2_active,access_key_2_last_rotated,access_key_2_last_used_date,
+    # access_key_2_last_used_region,access_key_2_last_used_service,cert_1_active,cert_1_last_rotated,
+    # cert_2_active,cert_2_last_rotated
+    for line in csv_lines:
+        parts = line.split(',')
+        user = {
+            'user': parts[0],
+            'arn': parts[1],
+            'user_creation_time': parts[2],
+            'password_enabled': parts[3],
+            'password_last_used': parts[4],
+            'password_last_changed': parts[5],
+            'password_next_rotation': parts[6],
+            'mfa_active': parts[7],
+            'access_key_1_active': parts[8],
+            'access_key_1_last_rotated': parts[9],
+            'access_key_1_last_used_date': parts[10],
+            'access_key_1_last_used_region': parts[11],
+            'access_key_1_last_used_service': parts[12],
+            'access_key_2_active': parts[13],
+            'access_key_2_last_rotated': parts[14],
+            'access_key_2_last_used_date': parts[15],
+            'access_key_2_last_used_region': parts[16],
+            'access_key_2_last_used_service': parts[17],
+            'cert_1_active': parts[18],
+            'cert_1_last_rotated': parts[19],
+            'cert_2_active': parts[20],
+            'cert_2_last_rotated': parts[21]
+        }
+
+        if user['arn'] == arn:
+            return user
+
+
+
 def get_access_advisor_active_counts(account, max_age=90):
     region = get_us_east_1(account)
     
@@ -266,3 +324,24 @@ def get_access_advisor_active_counts(account, max_age=90):
             account_stats[principal_type]['active'] += 1
         
     return account_stats
+
+
+def get_access_advisor(account, arn, max_age=90):
+    region = get_us_east_1(Account(None, account))
+    stats = {}
+
+    job_id = get_parameter_file(region, 'iam', 'generate-service-last-accessed-details', arn)['JobId']
+    json_last_access_details = get_parameter_file(region, 'iam', 'get-service-last-accessed-details', job_id)
+    stats['last_access'] = json_last_access_details
+
+    stats['is_inactive'] = True
+
+    job_completion_date = datetime.datetime.strptime(json_last_access_details['JobCompletionDate'][0:10], '%Y-%m-%d')
+
+    for service in json_last_access_details['ServicesLastAccessed']:
+        if 'LastAuthenticated' in service:
+            last_access_date = datetime.datetime.strptime(service['LastAuthenticated'][0:10], '%Y-%m-%d')
+            service['days_since_last_use'] = (job_completion_date - last_access_date).days
+            if service['days_since_last_use'] < max_age:
+                stats['is_inactive'] = False
+    return stats
